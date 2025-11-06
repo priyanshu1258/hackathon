@@ -30,7 +30,7 @@ function Navbar() {
         <div className="flex items-center justify-between py-4">
           <Link to="/" className="flex items-center gap-3 font-bold text-xl gradient-text hover:scale-105 transition-transform duration-300">
             <span className="text-3xl">🌱</span>
-            EcoTrack Pro
+           ReVibe
           </Link>
           
           <div className="flex items-center gap-4">

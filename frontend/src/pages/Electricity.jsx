@@ -1,11 +1,21 @@
 import { useState, useEffect } from 'react'
 import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import StatCard from '../components/StatCard'
+import AlertSystem from '../components/AlertSystem'
 import { fetchLatestByCategory, fetchReadings, setupSocketListeners } from '../services/api'
+import { generateAlerts } from '../utils/alertLogic'
+import { calculateCost, calculateCO2, calculateSavings, calculateEquivalents } from '../utils/costCalculations'
 
 function Electricity() {
   const [selectedBuilding, setSelectedBuilding] = useState('Hostel-A')
-  const [stats, setStats] = useState({ current: 0, peak: 0, average: 0, savings: 15 })
+  const [stats, setStats] = useState({ 
+    current: 0, 
+    peak: 0, 
+    average: 0, 
+    savings: 15,
+    savingsTrend: 'down',
+    trendValue: 'from baseline'
+  })
   const [buildingData, setBuildingData] = useState([
     { name: 'Hostel-A', usage: 0, capacity: 200, percentage: 0, status: 'normal' },
     { name: 'Library', usage: 0, capacity: 150, percentage: 0, status: 'normal' },
@@ -14,6 +24,8 @@ function Electricity() {
   ])
   const [recentReadings, setRecentReadings] = useState([])
   const [chartData, setChartData] = useState([])
+  const [alerts, setAlerts] = useState([])
+  const [costData, setCostData] = useState({ cost: '₹0', co2: '0 kg', savings: '₹0' })
 
   const buildings = ['Hostel-A', 'Library', 'Cafeteria', 'Labs']
 
@@ -65,24 +77,34 @@ function Electricity() {
         const histories = await Promise.all(historyPromises)
         
         let historicalAvg = 0
+        let recentAvg = 0
         let dataPoints = 0
         let hasSufficientData = false
         
         histories.forEach(history => {
           if (history && history.length > 15) {
             hasSufficientData = true
-            // Use older readings (indices 8-18) as baseline
-            const baseline = history.slice(8, 18)
+            // Use older readings (indices 10-20) as baseline
+            const baseline = history.slice(10, 20)
             const baselineSum = baseline.reduce((sum, r) => sum + (r.value || 0), 0)
             historicalAvg += baselineSum / baseline.length
+            
+            // Use recent readings (indices 0-5) for comparison
+            const recent = history.slice(0, 5)
+            const recentSum = recent.reduce((sum, r) => sum + (r.value || 0), 0)
+            recentAvg += recentSum / recent.length
+            
             dataPoints++
           }
         })
         
         let actualSavings = 15 // Default
+        let savingsTrend = 'down' // down = good (reduced usage)
+        let trendValue = ''
         
         if (hasSufficientData && dataPoints > 0) {
           const avgHistorical = historicalAvg / dataPoints
+          const avgRecent = recentAvg / dataPoints
           const currentAvg = total / buildings.length
           
           // Calculate savings: positive if current is less than historical
@@ -92,11 +114,24 @@ function Electricity() {
           
           // Ensure realistic range: 5-25% savings
           actualSavings = Math.max(5, Math.min(savingsPercent, 25))
+          
+          // Determine trend by comparing recent vs current
+          const trendPercent = Math.abs(Math.round(((currentAvg - avgRecent) / avgRecent) * 100))
+          if (currentAvg < avgRecent) {
+            savingsTrend = 'down' // Improving (less usage)
+            trendValue = `${trendPercent}% less`
+          } else if (currentAvg > avgRecent) {
+            savingsTrend = 'up' // Worsening (more usage)
+            trendValue = `${trendPercent}% more`
+          } else {
+            trendValue = 'stable'
+          }
         } else {
           // If insufficient data, calculate based on capacity utilization
           const avgUtilization = updatedBuildings.reduce((sum, b) => sum + b.percentage, 0) / updatedBuildings.length
           // Lower utilization = better savings
           actualSavings = avgUtilization < 60 ? 18 : avgUtilization < 75 ? 12 : 8
+          trendValue = 'from baseline'
         }
         
         setBuildingData(updatedBuildings)
@@ -105,8 +140,31 @@ function Electricity() {
           peak: Math.round(peak),
           peakSource: peakSource,
           average: Math.round(total / buildings.length),
+          savings: actualSavings,
+          savingsTrend: savingsTrend,
+          trendValue: trendValue
+        })
+
+        // Calculate cost and environmental impact
+        const costResult = calculateCost('electricity', total)
+        const co2Result = calculateCO2('electricity', total)
+        const savingsResult = calculateSavings('electricity', total, actualSavings)
+        
+        setCostData({
+          cost: costResult.formatted,
+          co2: co2Result.formatted,
+          savings: savingsResult.formatted,
+          savingsPercent: actualSavings
+        })
+
+        // Generate alerts based on current data
+        const newAlerts = generateAlerts('electricity', updatedBuildings, {
+          current: total,
+          peak: Math.round(peak),
+          average: Math.round(total / buildings.length),
           savings: actualSavings
         })
+        setAlerts(newAlerts)
       } catch (error) {
         console.error('Error calculating savings:', error)
         
@@ -122,6 +180,27 @@ function Electricity() {
           average: Math.round(total / buildings.length),
           savings: fallbackSavings
         })
+
+        // Calculate cost and environmental impact
+        const costResult = calculateCost('electricity', total)
+        const co2Result = calculateCO2('electricity', total)
+        const savingsResult = calculateSavings('electricity', total, fallbackSavings)
+        
+        setCostData({
+          cost: costResult.formatted,
+          co2: co2Result.formatted,
+          savings: savingsResult.formatted,
+          savingsPercent: fallbackSavings
+        })
+
+        // Generate alerts
+        const newAlerts = generateAlerts('electricity', updatedBuildings, {
+          current: total,
+          peak: Math.round(peak),
+          average: Math.round(total / buildings.length),
+          savings: fallbackSavings
+        })
+        setAlerts(newAlerts)
       }
 
       // Update recent readings
@@ -169,63 +248,96 @@ function Electricity() {
 
   return (
     <div className="max-w-7xl mx-auto p-4 md:p-8 bg-slate-50 dark:bg-slate-900 min-h-screen">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+      {/* Alert System */}
+      <AlertSystem 
+        alerts={alerts} 
+        onDismiss={(id) => setAlerts(prev => prev.filter(a => a.id !== id))}
+      />
+      
+      <div className="mb-8">
         <div className="animate-fade-in">
           <h1 className="text-3xl md:text-4xl font-bold text-slate-800 dark:text-white mb-2">⚡ Electricity Monitoring</h1>
           <p className="text-slate-600 dark:text-slate-400">Track and analyze electricity consumption across campus</p>
         </div>
-        <select 
-          aria-label="Select building"
-          className="px-5 py-3 rounded-lg border-2 border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-white font-medium cursor-pointer hover:border-amber-500 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 transition-all duration-200"
-          value={selectedBuilding}
-          onChange={(e) => setSelectedBuilding(e.target.value)}
-        >
-          {buildings.map(building => (
-            <option key={building} value={building}>{building}</option>
-          ))}
-        </select>
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <StatCard
           icon="⚡"
-          title="Current Usage"
-          value={stats.current} // Dynamically fetched total usage
+          title="Total Usage"
+          value={stats.current}
           unit="kWh"
           color="#f59e0b"
         />
         <StatCard
-          icon="📈"
-          title="Peak Usage"
-          value={stats.peak} // Dynamically fetched peak usage
-          unit="kWh"
-          color="#ef4444"
-          source={stats.peakSource}
-        />
-        <StatCard
-          icon="📊"
-          title="Average Usage"
-          value={stats.average} // Dynamically calculated average usage
-          unit="kWh"
+          icon="�"
+          title="Current Cost"
+          value={costData.cost}
+          unit=""
           color="#3b82f6"
         />
         <StatCard
           icon="🌱"
           title="Energy Saved"
-          value={stats.savings} // Dynamically set energy savings
+          value={stats.savings}
           unit="%"
-          trend="down"
-          trendValue="vs target"
+          trend={stats.savingsTrend}
+          trendValue={stats.trendValue}
           color="#10b981"
         />
       </div>
 
+      {/* Cost & Environmental Impact */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-12">
+        <div className="modern-card p-6 animate-fade-in hover-glow">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-12 h-12 rounded-xl bg-linear-to-br from-red-500 to-orange-600 flex items-center justify-center text-2xl shadow-lg">
+              �
+            </div>
+            <div>
+              <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Peak Demand</h3>
+              <p className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>{stats.peak} kWh</p>
+            </div>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            from {stats.peakSource} • Monitor high usage
+          </p>
+        </div>
+
+        <div className="modern-card p-6 animate-fade-in hover-glow">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-12 h-12 rounded-xl bg-linear-to-br from-green-500 to-emerald-600 flex items-center justify-center text-2xl shadow-lg">
+              🌍
+            </div>
+            <div>
+              <h3 className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Carbon Footprint</h3>
+              <p className="text-2xl font-bold" style={{ color: 'var(--text-primary)' }}>{costData.co2}</p>
+            </div>
+          </div>
+          <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+            0.82kg CO₂/kWh • Money saved: {costData.savings}
+          </p>
+        </div>
+      </div>
+
       {/* Historical Chart */}
       <div className="mb-12">
-        <h2 className="text-2xl font-bold text-slate-800 dark:text-white mb-6">
-          ⚡ Usage Trend - {selectedBuilding}
-        </h2>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+          <h2 className="text-2xl font-bold text-slate-800 dark:text-white">
+            ⚡ Usage Trend - {selectedBuilding}
+          </h2>
+          <select 
+            aria-label="Select building"
+            className="w-full sm:w-auto px-4 sm:px-5 py-2.5 sm:py-3 rounded-lg border-2 border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-white font-medium cursor-pointer hover:border-amber-500 focus:outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 transition-all duration-200"
+            value={selectedBuilding}
+            onChange={(e) => setSelectedBuilding(e.target.value)}
+          >
+            {buildings.map(building => (
+              <option key={building} value={building}>{building}</option>
+            ))}
+          </select>
+        </div>
         <div className="modern-card p-6 shadow-xl hover:shadow-2xl transition-all duration-300">
           {chartData.length === 0 ? (
             <div className="flex items-center justify-center h-[450px] text-slate-500 dark:text-slate-400">
@@ -305,8 +417,7 @@ function Electricity() {
                   fill="url(#electricityGradient)"
                   stroke="none"
                   name="Usage Range"
-                  animationDuration={1500}
-                  animationBegin={0}
+                  isAnimationActive={false}
                 />
                 <Line 
                   type="monotone" 
@@ -316,8 +427,7 @@ function Electricity() {
                   dot={{ fill: '#fff', stroke: '#f59e0b', strokeWidth: 2.5, r: 4.5 }}
                   activeDot={{ r: 7, fill: '#f59e0b', stroke: '#fff', strokeWidth: 3, filter: 'url(#electricityShadow)' }}
                   name="⚡ Electricity Usage (kWh)"
-                  animationDuration={1500}
-                  animationBegin={200}
+                  isAnimationActive={false}
                 />
               </ComposedChart>
             </ResponsiveContainer>
