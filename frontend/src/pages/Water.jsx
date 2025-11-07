@@ -5,7 +5,6 @@ import StatCard from '../components/StatCard'
 import { StatCardSkeleton, ChartSkeleton } from '../components/LoadingSkeleton'
 import AlertSystem from '../components/AlertSystem'
 import { fetchLatestByCategory, fetchReadings, setupSocketListeners } from '../services/api'
-import { generateAlerts } from '../utils/alertLogic'
 import { calculateCost, calculateCO2, calculateSavings, calculateEquivalents } from '../utils/costCalculations'
 
 function Water() {
@@ -74,113 +73,107 @@ function Water() {
         return { name: building, usage, target, percentage, status }
       })
 
-      // Calculate water savings by comparing current with historical baseline
+      // Calculate water saved vs the immediately previous reading (last cycle)
       try {
-        const historyPromises = buildings.map(b => fetchReadings('water', b, 30))
-        const histories = await Promise.all(historyPromises)
-        
-        let historicalAvg = 0
-        let recentAvg = 0
-        let dataPoints = 0
-        let hasSufficientData = false
-        
-        histories.forEach(history => {
-          if (history && history.length > 15) {
-            hasSufficientData = true
-            // Use older readings (indices 10-20) as baseline
-            const baseline = history.slice(10, 20)
-            const baselineSum = baseline.reduce((sum, r) => sum + (r.value || 0), 0)
-            historicalAvg += baselineSum / baseline.length
-            
-            // Use recent readings (indices 0-5) for trend comparison
-            const recent = history.slice(0, 5)
-            const recentSum = recent.reduce((sum, r) => sum + (r.value || 0), 0)
-            recentAvg += recentSum / recent.length
-            
-            dataPoints++
+        // Fetch only the last two readings per building
+  const historyPromises = buildings.map(b => fetchReadings('water', b, 2))
+  const histories = await Promise.all(historyPromises)
+
+        let prevTotal = 0
+        let latestTotal = 0
+        let counted = 0
+
+        const perBuildingDeltas = {}
+        histories.forEach((history, idx) => {
+          const bName = buildings[idx]
+          if (history && history.length >= 2) {
+            const prev = Number(history[history.length - 2]?.value || 0)
+            const latest = Number(history[history.length - 1]?.value || 0)
+            prevTotal += prev
+            latestTotal += latest
+            counted++
+            const target = targets[bName] || 1
+            const percentageLatest = Math.round((latest / target) * 100)
+            perBuildingDeltas[bName] = {
+              prev,
+              latest,
+              delta: latest - prev,
+              pctChange: prev ? ((latest - prev) / prev) * 100 : 0,
+              percentageLatest
+            }
+          } else if (history && history.length === 1) {
+            const single = Number(history[0]?.value || 0)
+            prevTotal += single
+            latestTotal += single
+            counted++
+            const target = targets[bName] || 1
+            const percentageLatest = Math.round((single / target) * 100)
+            perBuildingDeltas[bName] = {
+              prev: single,
+              latest: single,
+              delta: 0,
+              pctChange: 0,
+              percentageLatest
+            }
           }
         })
-        
-        let actualSavings = 12 // Default
-        let savingsTrend = 'down' // down = good (reduced usage)
-        let trendValue = ''
-        
-        if (hasSufficientData && dataPoints > 0) {
-          const avgHistorical = historicalAvg / dataPoints
-          const avgRecent = recentAvg / dataPoints
-          const currentAvg = total / buildings.length
-          
-          // Calculate savings: positive if current is less than historical
-          const savingsPercent = avgHistorical > 0 
-            ? Math.round(((avgHistorical - currentAvg) / avgHistorical) * 100) 
-            : 12
-          
-          // Ensure realistic range: 5-30% savings
-          actualSavings = Math.max(5, Math.min(savingsPercent, 30))
-          
-          // Determine trend by comparing recent vs current
-          const trendPercent = Math.abs(Math.round(((currentAvg - avgRecent) / avgRecent) * 100))
-          if (currentAvg < avgRecent) {
-            savingsTrend = 'down' // Improving (less usage)
-            trendValue = `${trendPercent}% less`
-          } else if (currentAvg > avgRecent) {
-            savingsTrend = 'up' // Worsening (more usage)
-            trendValue = `${trendPercent}% more`
-          } else {
-            trendValue = 'stable'
-          }
-        } else {
-          // If insufficient data, calculate based on target efficiency
-          const avgEfficiency = updatedBuildings.reduce((sum, b) => sum + b.percentage, 0) / updatedBuildings.length
-          
-          // Lower percentage of target = better efficiency = higher savings
-          if (avgEfficiency < 70) {
-            actualSavings = 25 // Excellent efficiency
-          } else if (avgEfficiency < 85) {
-            actualSavings = 18 // Good efficiency
-          } else if (avgEfficiency < 95) {
-            actualSavings = 12 // Average efficiency
-          } else if (avgEfficiency < 110) {
-            actualSavings = 8 // Below average
-          } else {
-            actualSavings = 5 // Poor efficiency (over target)
-          }
-          trendValue = 'from baseline'
+
+        if (counted === 0) {
+          prevTotal = total
+          latestTotal = total
         }
-        
+
+        const savingsPercent = prevTotal > 0 
+          ? Math.round(((prevTotal - latestTotal) / prevTotal) * 100)
+          : 0
+        const savingsTrend = latestTotal <= prevTotal ? 'down' : 'up'
+        const trendValue = `${Math.abs(savingsPercent)}% ${savingsTrend === 'down' ? 'less' : 'more'}`
+
         setBuildingData(updatedBuildings)
         setStats({
           current: total,
           peak: Math.round(peak),
           peakSource: peakSource,
           average: Math.round(total / buildings.length),
-          savings: actualSavings,
-          savingsTrend: savingsTrend,
-          trendValue: trendValue
+          savings: savingsPercent,
+          savingsTrend,
+          trendValue
         })
 
         // Calculate cost and environmental impact
         const costResult = calculateCost('water', total)
         const co2Result = calculateCO2('water', total)
-        const savingsResult = calculateSavings('water', total, actualSavings)
+        const savingsResult = calculateSavings('water', total, savingsPercent)
         const equivalents = calculateEquivalents('water', total)
         
         setCostData({
           cost: costResult.formatted,
           co2: co2Result.formatted,
           savings: savingsResult.formatted,
-          savingsPercent: actualSavings,
+          savingsPercent: savingsPercent,
           bottles: equivalents.bottles?.value || 0,
           showers: equivalents.showers?.value || 0
         })
 
-        // Generate alerts based on current data
-        const newAlerts = generateAlerts('water', updatedBuildings, {
-          current: total,
-          peak: Math.round(peak),
-          average: Math.round(total / buildings.length),
-          savings: actualSavings
-        })
+        // Generate alert for highest consumption building
+        const highestConsumption = updatedBuildings.reduce((max, building) => 
+          building.usage > max.usage ? building : max
+        , updatedBuildings[0])
+        
+        const newAlerts = [{
+          id: `water-peak-${Date.now()}`,
+          type: highestConsumption.percentage >= 110 ? 'critical' : highestConsumption.percentage >= 90 ? 'warning' : 'info',
+          title: '💧 Highest Water Consumer',
+          message: `${highestConsumption.name} is consuming the most water at ${highestConsumption.usage} L (${highestConsumption.percentage}% of target). ${highestConsumption.percentage >= 110 ? 'Critical! Exceeding target significantly.' : highestConsumption.percentage >= 90 ? 'High usage - approaching target.' : 'Usage within normal range.'}`,
+          building: highestConsumption.name,
+          value: highestConsumption.usage,
+          unit: 'L',
+          category: 'water',
+          categoryColor: '#3b82f6',
+          autoDismiss: true,
+          duration: 10
+        }]
+        
         setAlerts(newAlerts)
       } catch (error) {
         console.error('Error calculating water savings:', error)
@@ -212,15 +205,6 @@ function Water() {
           bottles: equivalents.bottles?.value || 0,
           showers: equivalents.showers?.value || 0
         })
-
-        // Generate alerts
-        const newAlerts = generateAlerts('water', updatedBuildings, {
-          current: total,
-          peak: Math.round(peak),
-          average: Math.round(total / buildings.length),
-          savings: fallbackSavings
-        })
-        setAlerts(newAlerts)
       }
       
       setLoading(false)
@@ -233,15 +217,39 @@ function Water() {
       console.log('Water history for', building, ':', history) // Debug log
       
       if (history && history.length > 0) {
-        // Don't reverse - keep chronological order (oldest to newest)
-        const formatted = history.map(reading => ({
-          time: reading.time,
-          usage: Number(reading.value).toFixed(0), // Keep as integer
-          rawUsage: Number(reading.value), // For calculations
-          building: reading.building,
-          timestamp: reading.ts || Date.now()
-        }))
-        console.log('Formatted chart data:', formatted) // Debug log
+        // Bucket readings into 30-minute intervals (oldest -> newest)
+  const BUCKET_MS = 5 * 60 * 1000
+        const buckets = new Map()
+
+        history.forEach(reading => {
+          const ts = Number(reading.ts || Date.now())
+          const bucketTs = Math.floor(ts / BUCKET_MS) * BUCKET_MS
+          const key = String(bucketTs)
+          const val = Number(reading.value) || 0
+          if (!buckets.has(key)) {
+            buckets.set(key, { ts: bucketTs, sum: val, count: 1 })
+          } else {
+            const b = buckets.get(key)
+            b.sum += val
+            b.count += 1
+          }
+        })
+
+        const toTime = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+        const formatted = Array.from(buckets.values())
+          .sort((a, b) => a.ts - b.ts)
+          .map(b => {
+            const avg = b.count > 0 ? b.sum / b.count : 0
+            return {
+              time: toTime(b.ts),
+              usage: Math.round(avg),
+              rawUsage: avg,
+              building,
+              timestamp: b.ts
+            }
+          })
+
+        console.log('Formatted 30-min bucketed data:', formatted) // Debug log
         setChartData(formatted)
       } else {
         console.log('No history data for', building)
@@ -268,14 +276,10 @@ function Water() {
       className="max-w-7xl mx-auto p-4 sm:p-6 md:p-8 bg-slate-50 dark:bg-slate-900 min-h-screen"
     >
       {/* Alert System */}
-      <AnimatePresence>
-        {alerts.length > 0 && (
-          <AlertSystem 
-            alerts={alerts} 
-            onDismiss={(id) => setAlerts(prev => prev.filter(a => a.id !== id))}
-          />
-        )}
-      </AnimatePresence>
+      <AlertSystem 
+        alerts={alerts} 
+        onDismiss={(id) => setAlerts(prev => prev.filter(a => a.id !== id))}
+      />
       
       <motion.div 
         initial={{ y: -20, opacity: 0 }}

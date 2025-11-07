@@ -3,7 +3,6 @@ import { ComposedChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Respon
 import StatCard from '../components/StatCard'
 import AlertSystem from '../components/AlertSystem'
 import { fetchLatestByCategory, fetchReadings, setupSocketListeners } from '../services/api'
-import { generateAlerts } from '../utils/alertLogic'
 import { calculateCost, calculateCO2, calculateSavings, calculateEquivalents } from '../utils/costCalculations'
 
 function Electricity() {
@@ -70,100 +69,106 @@ function Electricity() {
         return { name: building, usage, capacity, percentage, status }
       })
 
-      // Calculate energy savings by comparing current with historical baseline
-      // Fetch recent history to calculate savings
+      // Calculate energy saved vs the immediately previous reading (last cycle)
       try {
-        const historyPromises = buildings.map(b => fetchReadings('electricity', b, 30))
-        const histories = await Promise.all(historyPromises)
-        
-        let historicalAvg = 0
-        let recentAvg = 0
-        let dataPoints = 0
-        let hasSufficientData = false
-        
-        histories.forEach(history => {
-          if (history && history.length > 15) {
-            hasSufficientData = true
-            // Use older readings (indices 10-20) as baseline
-            const baseline = history.slice(10, 20)
-            const baselineSum = baseline.reduce((sum, r) => sum + (r.value || 0), 0)
-            historicalAvg += baselineSum / baseline.length
-            
-            // Use recent readings (indices 0-5) for comparison
-            const recent = history.slice(0, 5)
-            const recentSum = recent.reduce((sum, r) => sum + (r.value || 0), 0)
-            recentAvg += recentSum / recent.length
-            
-            dataPoints++
+        // Fetch only the last two readings per building to compare previous vs latest
+  const historyPromises = buildings.map(b => fetchReadings('electricity', b, 2))
+  const histories = await Promise.all(historyPromises)
+
+        let prevTotal = 0
+        let latestTotal = 0
+        let counted = 0
+
+        const perBuildingDeltas = {}
+        histories.forEach((history, idx) => {
+          const bName = buildings[idx]
+          if (history && history.length >= 2) {
+            // Backend returns chronological order (oldest -> newest)
+            const prev = Number(history[history.length - 2]?.value || 0)
+            const latest = Number(history[history.length - 1]?.value || 0)
+            prevTotal += prev
+            latestTotal += latest
+            counted++
+            const capacity = capacities[bName] || 1
+            const percentageLatest = Math.round((latest / capacity) * 100)
+            perBuildingDeltas[bName] = {
+              prev,
+              latest,
+              delta: latest - prev,
+              pctChange: prev ? ((latest - prev) / prev) * 100 : 0,
+              percentageLatest
+            }
+          } else if (history && history.length === 1) {
+            const single = Number(history[0]?.value || 0)
+            prevTotal += single
+            latestTotal += single
+            counted++
+            const capacity = capacities[bName] || 1
+            const percentageLatest = Math.round((single / capacity) * 100)
+            perBuildingDeltas[bName] = {
+              prev: single,
+              latest: single,
+              delta: 0,
+              pctChange: 0,
+              percentageLatest
+            }
           }
         })
-        
-        let actualSavings = 15 // Default
-        let savingsTrend = 'down' // down = good (reduced usage)
-        let trendValue = ''
-        
-        if (hasSufficientData && dataPoints > 0) {
-          const avgHistorical = historicalAvg / dataPoints
-          const avgRecent = recentAvg / dataPoints
-          const currentAvg = total / buildings.length
-          
-          // Calculate savings: positive if current is less than historical
-          const savingsPercent = avgHistorical > 0 
-            ? Math.round(((avgHistorical - currentAvg) / avgHistorical) * 100) 
-            : 15
-          
-          // Ensure realistic range: 5-25% savings
-          actualSavings = Math.max(5, Math.min(savingsPercent, 25))
-          
-          // Determine trend by comparing recent vs current
-          const trendPercent = Math.abs(Math.round(((currentAvg - avgRecent) / avgRecent) * 100))
-          if (currentAvg < avgRecent) {
-            savingsTrend = 'down' // Improving (less usage)
-            trendValue = `${trendPercent}% less`
-          } else if (currentAvg > avgRecent) {
-            savingsTrend = 'up' // Worsening (more usage)
-            trendValue = `${trendPercent}% more`
-          } else {
-            trendValue = 'stable'
-          }
-        } else {
-          // If insufficient data, calculate based on capacity utilization
-          const avgUtilization = updatedBuildings.reduce((sum, b) => sum + b.percentage, 0) / updatedBuildings.length
-          // Lower utilization = better savings
-          actualSavings = avgUtilization < 60 ? 18 : avgUtilization < 75 ? 12 : 8
-          trendValue = 'from baseline'
+
+        // Default to totals computed from latest snapshot if we couldn't build both sums
+        if (counted === 0) {
+          prevTotal = total
+          latestTotal = total
         }
-        
+
+        const savingsPercent = prevTotal > 0 
+          ? Math.round(((prevTotal - latestTotal) / prevTotal) * 100)
+          : 0
+        const savingsTrend = latestTotal <= prevTotal ? 'down' : 'up'
+        const trendValue = `${Math.abs(savingsPercent)}% ${savingsTrend === 'down' ? 'less' : 'more'}`
+
         setBuildingData(updatedBuildings)
         setStats({
           current: total,
           peak: Math.round(peak),
           peakSource: peakSource,
           average: Math.round(total / buildings.length),
-          savings: actualSavings,
-          savingsTrend: savingsTrend,
-          trendValue: trendValue
+          savings: savingsPercent,
+          savingsTrend,
+          trendValue
         })
 
         // Calculate cost and environmental impact
         const costResult = calculateCost('electricity', total)
         const co2Result = calculateCO2('electricity', total)
-        const savingsResult = calculateSavings('electricity', total, actualSavings)
+        const savingsResult = calculateSavings('electricity', total, savingsPercent)
         
         setCostData({
           cost: costResult.formatted,
           co2: co2Result.formatted,
           savings: savingsResult.formatted,
-          savingsPercent: actualSavings
+          savingsPercent: savingsPercent
         })
 
-        // Generate alerts based on current data
-        const newAlerts = generateAlerts('electricity', updatedBuildings, {
-          current: total,
-          peak: Math.round(peak),
-          average: Math.round(total / buildings.length),
-          savings: actualSavings
-        })
+        // Generate alert for highest consumption building
+        const highestConsumption = updatedBuildings.reduce((max, building) => 
+          building.usage > max.usage ? building : max
+        , updatedBuildings[0])
+        
+        const newAlerts = [{
+          id: `electricity-peak-${Date.now()}`,
+          type: highestConsumption.percentage >= 90 ? 'critical' : highestConsumption.percentage >= 75 ? 'warning' : 'info',
+          title: '⚡ Highest Electricity Consumer',
+          message: `${highestConsumption.name} is consuming the most electricity at ${highestConsumption.usage} kWh (${highestConsumption.percentage}% of capacity). ${highestConsumption.percentage >= 90 ? 'Critical level! Take immediate action.' : highestConsumption.percentage >= 75 ? 'High usage detected. Monitor closely.' : 'Usage within normal range.'}`,
+          building: highestConsumption.name,
+          value: highestConsumption.usage,
+          unit: 'kWh',
+          category: 'electricity',
+          categoryColor: '#f59e0b',
+          autoDismiss: true,
+          duration: 10
+        }]
+        
         setAlerts(newAlerts)
       } catch (error) {
         console.error('Error calculating savings:', error)
@@ -192,15 +197,6 @@ function Electricity() {
           savings: savingsResult.formatted,
           savingsPercent: fallbackSavings
         })
-
-        // Generate alerts
-        const newAlerts = generateAlerts('electricity', updatedBuildings, {
-          current: total,
-          peak: Math.round(peak),
-          average: Math.round(total / buildings.length),
-          savings: fallbackSavings
-        })
-        setAlerts(newAlerts)
       }
 
       // Update recent readings
@@ -219,15 +215,39 @@ function Electricity() {
       console.log('Electricity history for', building, ':', history) // Debug log
       
       if (history && history.length > 0) {
-        // Don't reverse - keep chronological order (oldest to newest)
-        const formatted = history.map(reading => ({
-          time: reading.time,
-          value: Number(reading.value).toFixed(2), // Keep decimal precision
-          rawValue: Number(reading.value), // For calculations
-          building: reading.building,
-          timestamp: reading.ts || Date.now()
-        }))
-        console.log('Formatted chart data:', formatted) // Debug log
+        // Bucket readings into 30-minute intervals (oldest -> newest)
+  const BUCKET_MS = 5 * 60 * 1000
+        const buckets = new Map()
+
+        history.forEach(reading => {
+          const ts = Number(reading.ts || Date.now())
+          const bucketTs = Math.floor(ts / BUCKET_MS) * BUCKET_MS
+          const key = String(bucketTs)
+          const val = Number(reading.value) || 0
+          if (!buckets.has(key)) {
+            buckets.set(key, { ts: bucketTs, sum: val, count: 1 })
+          } else {
+            const b = buckets.get(key)
+            b.sum += val
+            b.count += 1
+          }
+        })
+
+        const toTime = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+        const formatted = Array.from(buckets.values())
+          .sort((a, b) => a.ts - b.ts)
+          .map(b => {
+            const avg = b.count > 0 ? b.sum / b.count : 0
+            return {
+              time: toTime(b.ts),
+              value: +avg.toFixed(2),
+              rawValue: avg,
+              building,
+              timestamp: b.ts
+            }
+          })
+
+        console.log('Formatted 30-min bucketed data:', formatted) // Debug log
         setChartData(formatted)
       } else {
         console.log('No history data for', building)

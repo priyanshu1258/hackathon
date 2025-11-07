@@ -3,7 +3,6 @@ import { PieChart, Pie, Cell, ComposedChart, Bar, Line, XAxis, YAxis, CartesianG
 import StatCard from '../components/StatCard'
 import AlertSystem from '../components/AlertSystem'
 import { fetchLatestByCategory, fetchReadings, setupSocketListeners } from '../services/api'
-import { generateAlerts } from '../utils/alertLogic'
 import { calculateCost, calculateCO2, calculateEquivalents } from '../utils/costCalculations'
 
 function FoodWaste() {
@@ -87,90 +86,65 @@ function FoodWaste() {
       console.log('Updated buildings:', updatedBuildings) // Debug log
       console.log('Total waste:', total)
 
-      // Calculate waste reduction using optimized approach
+      // Calculate waste reduced vs the immediately previous reading (last cycle)
       try {
-        // Fetch historical data efficiently (50 readings is sufficient)
-        const historyPromises = buildings.map(b => fetchReadings('food', b, 50))
-        const histories = await Promise.all(historyPromises)
-        
-        // Calculate metrics in a single pass for efficiency
-        const metrics = {
-          originalBaseline: [],
-          recent: [],
-          validBuildings: 0
-        }
-        
-        histories.forEach(history => {
-          if (!history || history.length < 6) return
-          
-          // Get oldest 20% of readings for baseline (more stable average)
-          const baselineCount = Math.max(5, Math.floor(history.length * 0.2))
-          const oldestReadings = history.slice(-baselineCount)
-          const baselineAvg = oldestReadings.reduce((sum, r) => sum + (r.value || 0), 0) / baselineCount
-          
-          // Get newest 10% for recent trend (captures current performance)
-          const recentCount = Math.max(3, Math.floor(history.length * 0.1))
-          const recentReadings = history.slice(0, recentCount)
-          const recentAvg = recentReadings.reduce((sum, r) => sum + (r.value || 0), 0) / recentCount
-          
-          metrics.originalBaseline.push(baselineAvg)
-          metrics.recent.push(recentAvg)
-          metrics.validBuildings++
-        })
-        
-        // Calculate reduction percentage
-        let actualReduction = 0
-        let reductionTrend = 'down'
-        let trendValue = 'establishing baseline'
-        
-        if (metrics.validBuildings > 0) {
-          // Calculate averages across all buildings
-          const avgBaseline = metrics.originalBaseline.reduce((sum, val) => sum + val, 0) / metrics.validBuildings
-          const avgRecent = metrics.recent.reduce((sum, val) => sum + val, 0) / metrics.validBuildings
-          const currentAvg = total / buildings.length
-          
-          console.log('📊 Waste Reduction Analysis:')
-          console.log('  ├─ Original Baseline:', avgBaseline.toFixed(2), 'kg/building')
-          console.log('  ├─ Recent Average:', avgRecent.toFixed(2), 'kg/building')
-          console.log('  ├─ Current Average:', currentAvg.toFixed(2), 'kg/building')
-          
-          // Calculate reduction from baseline (handle edge cases)
-          if (avgBaseline > 0.1) { // Minimum threshold to avoid division issues
-            const reductionPercent = ((avgBaseline - currentAvg) / avgBaseline) * 100
-            actualReduction = Math.round(Math.max(-50, Math.min(reductionPercent, 60))) // Cap: -50% to +60%
-            console.log('  └─ Waste Reduced:', actualReduction, '%')
-            
-            // Determine trend (recent vs current)
-            if (avgRecent > 0.1) {
-              const trendPercent = Math.abs(((currentAvg - avgRecent) / avgRecent) * 100)
-              if (currentAvg < avgRecent * 0.95) { // 5% threshold for "improving"
-                reductionTrend = 'down'
-                trendValue = `${Math.round(trendPercent)}% less waste`
-              } else if (currentAvg > avgRecent * 1.05) { // 5% threshold for "worsening"
-                reductionTrend = 'up'
-                trendValue = `${Math.round(trendPercent)}% more waste`
-              } else {
-                trendValue = 'stable'
-              }
-            } else {
-              trendValue = actualReduction >= 0 ? `${actualReduction}% from baseline` : 'baseline'
+        // Fetch only the last two readings per building to compare previous vs latest
+  const historyPromises = buildings.map(b => fetchReadings('food', b, 2))
+  const histories = await Promise.all(historyPromises)
+
+        let prevTotal = 0
+        let latestTotal = 0
+        let counted = 0
+
+        const perBuildingDeltas = {}
+        histories.forEach((history, idx) => {
+          const bName = buildings[idx]
+          if (history && history.length >= 2) {
+            const prev = Number(history[history.length - 2]?.value || 0)
+            const latest = Number(history[history.length - 1]?.value || 0)
+            prevTotal += prev
+            latestTotal += latest
+            counted++
+            perBuildingDeltas[bName] = {
+              prev,
+              latest,
+              delta: latest - prev,
+              pctChange: prev ? ((latest - prev) / prev) * 100 : 0
             }
-          } else {
-            console.log('  └─ ⚠️ Insufficient baseline data')
-            actualReduction = 0
-            trendValue = 'insufficient data'
+          } else if (history && history.length === 1) {
+            const single = Number(history[0]?.value || 0)
+            prevTotal += single
+            latestTotal += single
+            counted++
+            perBuildingDeltas[bName] = {
+              prev: single,
+              latest: single,
+              delta: 0,
+              pctChange: 0
+            }
           }
+        })
+
+        if (counted === 0) {
+          prevTotal = total
+          latestTotal = total
         }
-        
+
+        const reductionPercent = prevTotal > 0 
+          ? Math.round(((prevTotal - latestTotal) / prevTotal) * 100)
+          : 0
+        const reductionTrend = latestTotal <= prevTotal ? 'down' : 'up'
+        const trendValue = `${Math.abs(reductionPercent)}% ${reductionTrend === 'down' ? 'less' : 'more'}`
+
         setBuildingData(updatedBuildings)
         setStats({
           current: Math.round(total * 10) / 10,
           peak: Math.round(peak * 10) / 10,
           peakSource: peakSource,
           average: Math.round((total / buildings.length) * 10) / 10,
-          reduction: actualReduction,
-          reductionTrend: reductionTrend,
-          trendValue: trendValue
+          reduction: reductionPercent,
+          reductionTrend,
+          trendValue
         })
 
         // Calculate cost and environmental impact
@@ -185,13 +159,27 @@ function FoodWaste() {
           people: equivalents.people?.value || 0
         })
 
-        // Generate alerts based on current data
-        const newAlerts = generateAlerts('food', updatedBuildings, {
-          current: Math.round(total * 10) / 10,
-          peak: Math.round(peak * 10) / 10,
-          average: Math.round((total / buildings.length) * 10) / 10,
-          reduction: actualReduction
-        })
+        // Generate alert for highest waste building
+        const highestWaste = updatedBuildings.reduce((max, building) => 
+          building.waste > max.waste ? building : max
+        , updatedBuildings[0])
+        
+        const wasteThreshold = highestWaste.name === 'Cafeteria' ? 35 : 10
+        
+        const newAlerts = [{
+          id: `food-peak-${Date.now()}`,
+          type: highestWaste.waste >= wasteThreshold * 1.2 ? 'critical' : highestWaste.waste >= wasteThreshold ? 'warning' : 'info',
+          title: '🍽️ Highest Food Waste Source',
+          message: `${highestWaste.name} has the most food waste at ${highestWaste.waste.toFixed(1)} kg (${(highestWaste.waste / highestWaste.meals * 1000).toFixed(0)}g per meal). ${highestWaste.waste >= wasteThreshold * 1.2 ? 'Critical waste levels! Immediate action needed.' : highestWaste.waste >= wasteThreshold ? 'High waste detected. Review portion sizes.' : 'Waste within acceptable range.'}`,
+          building: highestWaste.name,
+          value: highestWaste.waste.toFixed(1),
+          unit: 'kg',
+          category: 'food',
+          categoryColor: '#10b981',
+          autoDismiss: true,
+          duration: 10
+        }]
+        
         setAlerts(newAlerts)
       } catch (error) {
         console.error('Error calculating waste reduction:', error)
@@ -284,14 +272,40 @@ function FoodWaste() {
         return
       }
 
-      const formatted = history.map(reading => ({
-        time: reading.time,
-        waste: Math.round(reading.value * 10) / 10,
-        rawWaste: reading.value,
-        building: reading.building,
-        timestamp: reading.timestamp
-      }))
-      console.log('Formatted chart data:', formatted) // Debug log
+      // Bucket readings into 30-minute intervals (oldest -> newest)
+  const BUCKET_MS = 5 * 60 * 1000
+      const buckets = new Map()
+
+      history.forEach(reading => {
+        const ts = Number(reading.ts || Date.now())
+        const bucketTs = Math.floor(ts / BUCKET_MS) * BUCKET_MS
+        const key = String(bucketTs)
+        const val = Number(reading.value) || 0
+        if (!buckets.has(key)) {
+          buckets.set(key, { ts: bucketTs, sum: val, count: 1 })
+        } else {
+          const b = buckets.get(key)
+          b.sum += val
+          b.count += 1
+        }
+      })
+
+      const toTime = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+      const formatted = Array.from(buckets.values())
+        .sort((a, b) => a.ts - b.ts)
+        .map(b => {
+          const avg = b.count > 0 ? b.sum / b.count : 0
+          const rounded = Math.round(avg * 10) / 10
+          return {
+            time: toTime(b.ts),
+            waste: rounded,
+            rawWaste: avg,
+            building,
+            timestamp: b.ts
+          }
+        })
+
+      console.log('Formatted 30-min bucketed data:', formatted) // Debug log
       setChartData(formatted)
     } catch (error) {
       console.error('Error in loadBuildingHistory:', error)

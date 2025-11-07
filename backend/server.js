@@ -433,7 +433,7 @@ db.ref("/test")
     console.log("✅ Firebase connection test successful\n");
 
     // Start data generation every 30 minutes (production interval)
-    const interval = 30 * 60 * 1000; // 30 minutes for production
+    const interval = 10 * 60 * 1000; // 10 minutes for production
     // const interval = 5 * 60 * 1000; // uncomment for development (5 minutes)
 
     console.log(`🚀 Data generator started (interval: ${interval / 1000}s)`);

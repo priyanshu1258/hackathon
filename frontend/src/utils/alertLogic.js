@@ -5,221 +5,260 @@ export const generateAlerts = (category, buildingData, stats, historicalData = n
   const alerts = []
   const timestamp = Date.now()
 
-  // More conservative thresholds - only alert on truly problematic situations
+  // Deterministic thresholds (no randomness)
   const thresholds = {
     electricity: {
-      critical: 95, // % of capacity (was 90)
-      warning: 85, // % (was 75)
-      excellent: 50, // % (was 60)
-      spike: 30 // % increase from average (was 20)
+      criticalPctOfCapacity: 95,
+      warningPctOfCapacity: 85,
+      spikePctChange: 25, // vs previous reading
+      recoveryPctDrop: -15 // % drop vs previous reading
     },
     water: {
-      critical: 120, // % of target (was 110)
-      warning: 105, // % (was 95)
-      excellent: 60, // % (was 70)
-      spike: 35 // % (was 25)
+      criticalPctOfTarget: 120,
+      warningPctOfTarget: 105,
+      spikePctChange: 30,
+      recoveryPctDrop: -15
     },
     food: {
-      critical: 40, // kg for cafeteria (was 35)
-      warning: 32, // kg (was 28)
-      excellent: 15, // kg (was 18)
-      spike: 40 // % (was 30)
+      cafeteriaCriticalKg: 40,
+      cafeteriaWarningKg: 32,
+      spikePctChange: 35,
+      recoveryPctDrop: -20
     }
   }
 
   const categoryConfig = {
-    electricity: {
-      unit: 'kWh',
-      icon: '⚡',
-      name: 'Electricity'
-    },
-    water: {
-      unit: 'L',
-      icon: '💧',
-      name: 'Water'
-    },
-    food: {
-      unit: 'kg',
-      icon: '🍽️',
-      name: 'Food Waste'
-    }
+    electricity: { unit: 'kWh', icon: '⚡', name: 'Electricity' },
+    water: { unit: 'L', icon: '💧', name: 'Water' },
+    food: { unit: 'kg', icon: '🍽️', name: 'Food Waste' }
   }
 
   const config = categoryConfig[category] || categoryConfig.electricity
   const threshold = thresholds[category] || thresholds.electricity
 
-  // Only show 1 alert per building per category to avoid spam
   const alertedBuildings = new Set()
 
-  // Check each building for alerts
+  const fmt = (num, digits = 1) => {
+    if (typeof num !== 'number' || isNaN(num)) return '0'
+    return Number(num.toFixed(digits)).toString()
+  }
+
+  // Check each building using last-two-readings deltas if available
   buildingData.forEach(building => {
-    const buildingId = `${category}-${building.name}-${timestamp}`
-    
-    // Skip if already alerted for this building
-    if (alertedBuildings.has(building.name)) return
-    
+    const bName = building.name || building.building || 'Unknown'
+    const bHist = historicalData?.[bName]
+    const prev = Number(bHist?.prev ?? NaN)
+    const latest = Number(bHist?.latest ?? NaN)
+    const hasDelta = !isNaN(prev) && !isNaN(latest)
+    const delta = hasDelta ? latest - prev : 0
+    const pctChange = hasDelta && prev !== 0 ? (delta / prev) * 100 : 0
+
+    if (alertedBuildings.has(bName)) return
+
     if (category === 'electricity') {
-      // Critical: Usage > 95% of capacity (truly dangerous)
-      if (building.percentage > threshold.critical) {
+      const pctOfCapacity = building.percentage ?? bHist?.percentageLatest ?? 0
+      const deltaAbs = Math.abs(delta)
+      const capacity = building.capacity || 200
+
+      // Critical: near capacity and rising vs previous reading
+      if (pctOfCapacity >= threshold.criticalPctOfCapacity && (pctChange > 5 || latest > prev)) {
+        const extraUsage = deltaAbs
+        const equivalent = Math.round((extraUsage / 1.5) * 10) / 10 // ~1.5 kWh per AC/hour
         alerts.push({
-          id: `critical-${buildingId}`,
+          id: `critical-electricity-${bName}-${timestamp}`,
           type: 'critical',
-          title: '⚡ Power Alert',
-          message: `${building.name} is running at ${building.percentage}% capacity! Let's reduce load to prevent issues.`,
-          building: building.name,
-          value: building.usage,
+          title: '⚡ Power Overload Alert!',
+          message: `${bName} consumed ${fmt(latest,1)} kWh (up from ${fmt(prev,1)} kWh). You're using ${extraUsage > 0 ? fmt(extraUsage,1) + ' kWh MORE' : 'max power'}! That's ${equivalent} extra ACs running. Turn off non-essential equipment NOW!`,
+          building: bName,
+          value: fmt(latest,1),
           unit: config.unit,
           category,
           autoDismiss: false,
           action: {
-            label: 'View Details',
-            onClick: () => console.log(`Viewing ${building.name} details`)
+            label: 'Check Systems',
+            onClick: () => console.log(`Checking ${bName} electrical systems`)
           }
         })
-        alertedBuildings.add(building.name)
+        alertedBuildings.add(bName)
       }
-      // Warning: Usage > 85% of capacity (only show for sustained high usage)
-      else if (building.percentage > threshold.warning && building.percentage <= threshold.critical) {
+      // Warning: high capacity or sharp spike
+      else if (pctOfCapacity >= threshold.warningPctOfCapacity || pctChange >= threshold.spikePctChange) {
+        const extraUsage = delta > 0 ? fmt(delta,1) : '0'
+        const costPerKwh = 8 // ₹8 per kWh average
+        const extraCost = delta > 0 ? Math.round(delta * costPerKwh) : 0
         alerts.push({
-          id: `warning-${buildingId}`,
+          id: `warning-electricity-${bName}-${timestamp}`,
           type: 'warning',
-          title: '🔋 High Usage Detected',
-          message: `${building.name} is at ${building.percentage}% capacity. Consider turning off non-essential equipment.`,
-          building: building.name,
+          title: '🔋 High Power Consumption',
+          message: `${bName} is consuming ${fmt(latest,1)} kWh (was ${fmt(prev,1)} kWh). That's ${extraUsage} kWh more than last cycle! Extra cost: ₹${extraCost}. Consider switching off lights & ACs in unused areas.`,
+          building: bName,
+          category,
+          autoDismiss: true,
+          duration: 12
+        })
+        alertedBuildings.add(bName)
+      }
+      // Success: meaningful drop vs previous or strong campus savings
+      else if (pctChange <= threshold.recoveryPctDrop || (stats?.savings ?? 0) >= 10) {
+        const savedKwh = Math.abs(delta)
+        const savedCost = Math.round(savedKwh * 8)
+        const co2Saved = Math.round(savedKwh * 0.82 * 10) / 10 // 0.82 kg CO2 per kWh
+        alerts.push({
+          id: `success-electricity-${bName}-${timestamp}`,
+          type: 'success',
+          title: '🌟 Excellent Energy Savings!',
+          message: `${bName} consumed only ${fmt(latest,1)} kWh (down from ${fmt(prev,1)} kWh)! You saved ${fmt(savedKwh,1)} kWh, ₹${savedCost}, and ${co2Saved} kg CO₂. Amazing work! 🎉`,
+          building: bName,
           category,
           autoDismiss: true,
           duration: 10
         })
-        alertedBuildings.add(building.name)
-      }
-      // Success: Excellent efficiency (only occasionally celebrate)
-      else if (building.percentage < threshold.excellent && Math.random() < 0.3) {
-        alerts.push({
-          id: `success-${buildingId}`,
-          type: 'success',
-          title: '🌟 Excellent Work',
-          message: `${building.name} is running super efficiently at ${building.percentage}%! You're making a real difference!`,
-          building: building.name,
-          category,
-          autoDismiss: true,
-          duration: 8
-        })
-        alertedBuildings.add(building.name)
+        alertedBuildings.add(bName)
       }
     }
 
     if (category === 'water') {
-      // Critical: Usage > 120% of target (truly over limit)
-      if (building.percentage > threshold.critical) {
+      const pctOfTarget = building.percentage ?? bHist?.percentageLatest ?? 0
+      const deltaAbs = Math.abs(delta)
+
+      if (pctOfTarget >= threshold.criticalPctOfTarget && (pctChange > 10 || latest > prev)) {
+        const extraWater = deltaAbs
+        const bottles = Math.round(extraWater / 1) // 1L bottles
+        const showers = Math.round(extraWater / 75) // ~75L per shower
         alerts.push({
-          id: `critical-${buildingId}`,
+          id: `critical-water-${bName}-${timestamp}`,
           type: 'critical',
-          title: '💧 Water Limit Exceeded',
-          message: `${building.name} has used ${building.percentage}% of daily target. Let's find and fix any leaks!`,
-          building: building.name,
-          value: building.usage,
+          title: '💧 Water Usage Critical!',
+          message: `${bName} consumed ${fmt(latest,0)} L (up from ${fmt(prev,0)} L). That's ${fmt(extraWater,0)} L MORE water! Equivalent to ${bottles} bottles or ${showers} showers wasted! Check for leaks immediately!`,
+          building: bName,
+          value: fmt(latest,0),
           unit: config.unit,
           category,
           autoDismiss: false,
           action: {
-            label: 'Check System',
-            onClick: () => console.log(`Checking ${building.name} water system`)
+            label: 'Inspect Now',
+            onClick: () => console.log(`Inspecting ${bName} water system`)
           }
         })
-        alertedBuildings.add(building.name)
+        alertedBuildings.add(bName)
       }
-      // Warning: Usage > 105% of recommended level
-      else if (building.percentage > threshold.warning && building.percentage <= threshold.critical) {
+      else if (pctOfTarget >= threshold.warningPctOfTarget || pctChange >= threshold.spikePctChange) {
+        const extraWater = delta > 0 ? Math.round(delta) : 0
+        const buckets = Math.round(extraWater / 10) // 10L buckets
+        const costPerL = 0.05 // ₹0.05 per liter
+        const extraCost = Math.round(extraWater * costPerL)
         alerts.push({
-          id: `warning-${buildingId}`,
+          id: `warning-water-${bName}-${timestamp}`,
           type: 'warning',
-          title: '💦 Water Usage High',
-          message: `${building.name} is at ${building.percentage}% of target. Small changes can make a big impact!`,
-          building: building.name,
+          title: '💦 High Water Usage Detected',
+          message: `${bName} used ${fmt(latest,0)} L (was ${fmt(prev,0)} L). That's ${extraWater} L more—enough to fill ${buckets} buckets! Extra cost: ₹${extraCost}. Fix any dripping taps and use water wisely.`,
+          building: bName,
+          category,
+          autoDismiss: true,
+          duration: 12
+        })
+        alertedBuildings.add(bName)
+      }
+      else if (pctChange <= thresholds.water.recoveryPctDrop || (stats?.savings ?? 0) >= 10) {
+        const savedWater = Math.abs(delta)
+        const savedBottles = Math.round(savedWater / 1)
+        const savedCost = Math.round(savedWater * 0.05)
+        alerts.push({
+          id: `success-water-${bName}-${timestamp}`,
+          type: 'success',
+          title: '🌊 Amazing Water Conservation!',
+          message: `${bName} used only ${fmt(latest,0)} L (down from ${fmt(prev,0)} L)! You saved ${fmt(savedWater,0)} L—that's ${savedBottles} water bottles! Saved ₹${savedCost}. Every drop counts! 💙`,
+          building: bName,
           category,
           autoDismiss: true,
           duration: 10
         })
-        alertedBuildings.add(building.name)
-      }
-      // Success: Excellent efficiency (only occasionally)
-      else if (building.percentage < threshold.excellent && Math.random() < 0.3) {
-        alerts.push({
-          id: `success-${buildingId}`,
-          type: 'success',
-          title: '🌊 Water Champion',
-          message: `Amazing! ${building.name} is only using ${building.percentage}% of target. Every drop counts!`,
-          building: building.name,
-          category,
-          autoDismiss: true,
-          duration: 8
-        })
-        alertedBuildings.add(building.name)
+        alertedBuildings.add(bName)
       }
     }
 
     if (category === 'food') {
-      const wasteValue = building.food || building.usage || building.waste || 0
-      
-      // Critical: High food waste (cafeteria specific)
-      if (building.name.includes('Cafeteria') && wasteValue > threshold.critical) {
+      const latestWaste = Number(building.waste ?? building.usage ?? building.food ?? latest ?? 0)
+      const prevWaste = Number(prev ?? 0)
+      const isCafeteria = /Cafeteria/i.test(bName)
+      const deltaWaste = latestWaste - prevWaste
+
+      if (isCafeteria && (latestWaste >= threshold.cafeteriaCriticalKg && pctChange >= 10)) {
+        const mealsWasted = Math.round(latestWaste / 0.4) // ~400g per meal
+        const peopleCanFeed = Math.round(latestWaste / 0.5) // ~500g per person
+        const costPerKg = 150 // ₹150 per kg of food
+        const moneyWasted = Math.round(latestWaste * costPerKg)
         alerts.push({
-          id: `critical-${buildingId}`,
+          id: `critical-food-${bName}-${timestamp}`,
           type: 'critical',
-          title: '🍽️ Food Waste Alert',
-          message: `${wasteValue}kg of food wasted today in ${building.name}. Let's review portion sizes and storage!`,
-          building: building.name,
-          value: wasteValue,
+          title: '🍽️ Excessive Food Waste!',
+          message: `${bName} wasted ${fmt(latestWaste,1)} kg today (up from ${fmt(prevWaste,1)} kg). That's ${fmt(deltaWaste,1)} kg MORE! Could have fed ${peopleCanFeed} people or saved ${mealsWasted} meals. Money lost: ₹${moneyWasted}! Review portion sizes NOW!`,
+          building: bName,
+          value: fmt(latestWaste,1),
           unit: config.unit,
           category,
           autoDismiss: false,
           action: {
-            label: 'See Solutions',
-            onClick: () => console.log(`Showing waste reduction tips for ${building.name}`)
+            label: 'View Solutions',
+            onClick: () => console.log(`Opening waste reduction tips for ${bName}`)
           }
         })
-        alertedBuildings.add(building.name)
+        alertedBuildings.add(bName)
       }
-      // Warning: Moderate waste
-      else if (building.name.includes('Cafeteria') && wasteValue > threshold.warning && wasteValue <= threshold.critical) {
+      else if (isCafeteria && (latestWaste >= threshold.cafeteriaWarningKg || pctChange >= threshold.spikePctChange)) {
+        const extraWaste = deltaWaste > 0 ? deltaWaste : 0
+        const mealsLost = Math.round(extraWaste / 0.4)
+        const targetWaste = threshold.cafeteriaWarningKg
+        const overTarget = latestWaste - targetWaste
         alerts.push({
-          id: `warning-${buildingId}`,
+          id: `warning-food-${bName}-${timestamp}`,
           type: 'warning',
-          title: '🥗 Reduce Food Waste',
-          message: `${wasteValue}kg wasted today. Target is under ${threshold.warning}kg. You're close to the goal!`,
-          building: building.name,
+          title: '🥗 Food Waste Rising',
+          message: `${bName} wasted ${fmt(latestWaste,1)} kg (was ${fmt(prevWaste,1)} kg). That's ${mealsLost} meals wasted! You're ${fmt(overTarget,1)} kg over the target. Small portions = less waste. Let's do better!`,
+          building: bName,
+          category,
+          autoDismiss: true,
+          duration: 12
+        })
+        alertedBuildings.add(bName)
+      }
+      else if (pctChange <= thresholds.food.recoveryPctDrop || (stats?.reduction ?? 0) >= 10) {
+        const wasteReduced = Math.abs(deltaWaste)
+        const mealsSaved = Math.round(wasteReduced / 0.4)
+        const moneySaved = Math.round(wasteReduced * 150)
+        alerts.push({
+          id: `success-food-${bName}-${timestamp}`,
+          type: 'success',
+          title: '🌱 Outstanding Waste Reduction!',
+          message: `${bName} wasted only ${fmt(latestWaste,1)} kg (down from ${fmt(prevWaste,1)} kg)! You reduced waste by ${fmt(wasteReduced,1)} kg, saved ${mealsSaved} meals worth ₹${moneySaved}! You're a sustainability hero! 🎉`,
+          building: bName,
           category,
           autoDismiss: true,
           duration: 10
         })
-        alertedBuildings.add(building.name)
-      }
-      // Achievement: Excellent waste management (only occasionally)
-      else if (building.name.includes('Cafeteria') && wasteValue < threshold.excellent && Math.random() < 0.3) {
-        alerts.push({
-          id: `achievement-${buildingId}`,
-          type: 'achievement',
-          title: '🎉 Zero Waste Hero',
-          message: `Incredible! Only ${wasteValue}kg wasted in ${building.name}. You're a sustainability champion!`,
-          building: building.name,
-          category,
-          autoDismiss: true,
-          duration: 8
-        })
-        alertedBuildings.add(building.name)
+        alertedBuildings.add(bName)
       }
     }
   })
 
   // Campus-wide alerts (only show significant achievements, less frequently)
   if (stats && alerts.length < 2) { // Don't overwhelm with alerts
-    // High savings achievement (only for very high savings)
-    if (stats.savings && stats.savings > 25 && Math.random() < 0.2) {
+    const isFood = category === 'food'
+    const metricValue = isFood ? stats.reduction : stats.savings
+    const metricLabel = isFood ? 'reduction in food waste' : `saved on ${config.name.toLowerCase()}`
+    const titleByCategory = isFood
+      ? '🏆 Food Waste Milestone'
+      : category === 'water'
+        ? '🏆 Water Savings Milestone'
+        : '🏆 Electricity Savings Milestone'
+
+    // High achievement (only for very high improvements)
+    if (metricValue && metricValue > 25 && Math.random() < 0.2) {
       alerts.push({
-        id: `achievement-campus-savings-${timestamp}`,
+        id: `achievement-${category}-summary-${timestamp}`,
         type: 'achievement',
-        title: '🏆 Campus Achievement Unlocked',
-        message: `Incredible! Campus has saved ${stats.savings}% on ${config.name.toLowerCase()}. Together we're changing the world!`,
+        title: titleByCategory,
+        message: `Incredible! Campus achieved ${metricValue}% ${metricLabel}. Together we're changing the world!`,
         category,
         autoDismiss: true,
         duration: 12

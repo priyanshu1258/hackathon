@@ -18,55 +18,114 @@ function AlertSystem({ alerts, onDismiss }) {
     setVisibleAlerts(alerts.slice(0, 3))
   }, [alerts, visibleAlerts.length])
 
-  const getAlertStyle = (type) => {
+  const getAlertStyle = (type, categoryColor) => {
+    // Use category color for all alert types to match the page theme
+    const isElectricity = categoryColor === '#f59e0b'
+    const isWater = categoryColor === '#3b82f6'
+    const isFood = categoryColor === '#10b981'
+    
     switch (type) {
       case 'critical':
         return {
-          bg: 'bg-red-50 dark:bg-red-900/20',
-          border: 'border-red-500',
-          textColor: 'text-red-900 dark:text-red-100',
+          bg: isElectricity 
+            ? 'bg-amber-50 dark:bg-amber-900/20' 
+            : isWater 
+            ? 'bg-blue-50 dark:bg-blue-900/20'
+            : 'bg-emerald-50 dark:bg-emerald-900/20',
+          border: 'border-2',
+          textColor: isElectricity 
+            ? 'text-amber-900 dark:text-amber-100'
+            : isWater 
+            ? 'text-blue-900 dark:text-blue-100'
+            : 'text-emerald-900 dark:text-emerald-100',
           icon: '🚨',
-          iconBg: 'bg-red-500'
+          iconBg: isElectricity ? 'bg-amber-600' : isWater ? 'bg-blue-600' : 'bg-emerald-600',
+          accentColor: categoryColor
         }
       case 'warning':
         return {
-          bg: 'bg-orange-50 dark:bg-orange-900/20',
-          border: 'border-orange-500',
-          textColor: 'text-orange-900 dark:text-orange-100',
+          bg: isElectricity 
+            ? 'bg-amber-50 dark:bg-amber-900/20' 
+            : isWater 
+            ? 'bg-blue-50 dark:bg-blue-900/20'
+            : 'bg-emerald-50 dark:bg-emerald-900/20',
+          border: 'border-2',
+          textColor: isElectricity 
+            ? 'text-amber-900 dark:text-amber-100'
+            : isWater 
+            ? 'text-blue-900 dark:text-blue-100'
+            : 'text-emerald-900 dark:text-emerald-100',
           icon: '⚠️',
-          iconBg: 'bg-orange-500'
+          iconBg: isElectricity ? 'bg-amber-500' : isWater ? 'bg-blue-500' : 'bg-emerald-500',
+          accentColor: categoryColor
         }
       case 'success':
         return {
-          bg: 'bg-green-50 dark:bg-green-900/20',
-          border: 'border-green-500',
-          textColor: 'text-green-900 dark:text-green-100',
+          bg: isElectricity 
+            ? 'bg-amber-50 dark:bg-amber-900/20' 
+            : isWater 
+            ? 'bg-blue-50 dark:bg-blue-900/20'
+            : 'bg-emerald-50 dark:bg-emerald-900/20',
+          border: 'border-2',
+          textColor: isElectricity 
+            ? 'text-amber-900 dark:text-amber-100'
+            : isWater 
+            ? 'text-blue-900 dark:text-blue-100'
+            : 'text-emerald-900 dark:text-emerald-100',
           icon: '✅',
-          iconBg: 'bg-green-500'
+          iconBg: isElectricity ? 'bg-amber-500' : isWater ? 'bg-blue-500' : 'bg-emerald-500',
+          accentColor: categoryColor
         }
       case 'achievement':
         return {
-          bg: 'bg-purple-50 dark:bg-purple-900/20',
-          border: 'border-purple-500',
-          textColor: 'text-purple-900 dark:text-purple-100',
+          bg: isElectricity 
+            ? 'bg-amber-50 dark:bg-amber-900/20' 
+            : isWater 
+            ? 'bg-blue-50 dark:bg-blue-900/20'
+            : 'bg-emerald-50 dark:bg-emerald-900/20',
+          border: 'border-2',
+          textColor: isElectricity 
+            ? 'text-amber-900 dark:text-amber-100'
+            : isWater 
+            ? 'text-blue-900 dark:text-blue-100'
+            : 'text-emerald-900 dark:text-emerald-100',
           icon: '🎉',
-          iconBg: 'bg-purple-500'
+          iconBg: isElectricity ? 'bg-amber-500' : isWater ? 'bg-blue-500' : 'bg-emerald-500',
+          accentColor: categoryColor
         }
       case 'info':
         return {
-          bg: 'bg-blue-50 dark:bg-blue-900/20',
-          border: 'border-blue-500',
-          textColor: 'text-blue-900 dark:text-blue-100',
+          bg: isElectricity 
+            ? 'bg-amber-50 dark:bg-amber-900/20' 
+            : isWater 
+            ? 'bg-blue-50 dark:bg-blue-900/20'
+            : 'bg-emerald-50 dark:bg-emerald-900/20',
+          border: 'border-2',
+          textColor: isElectricity 
+            ? 'text-amber-900 dark:text-amber-100'
+            : isWater 
+            ? 'text-blue-900 dark:text-blue-100'
+            : 'text-emerald-900 dark:text-emerald-100',
           icon: 'ℹ️',
-          iconBg: 'bg-blue-500'
+          iconBg: isElectricity ? 'bg-amber-400' : isWater ? 'bg-blue-400' : 'bg-emerald-400',
+          accentColor: categoryColor
         }
       default:
         return {
-          bg: 'bg-slate-50 dark:bg-slate-900/20',
-          border: 'border-slate-500',
-          textColor: 'text-slate-900 dark:text-slate-100',
+          bg: isElectricity 
+            ? 'bg-amber-50 dark:bg-amber-900/20' 
+            : isWater 
+            ? 'bg-blue-50 dark:bg-blue-900/20'
+            : 'bg-emerald-50 dark:bg-emerald-900/20',
+          border: 'border-2',
+          textColor: isElectricity 
+            ? 'text-amber-900 dark:text-amber-100'
+            : isWater 
+            ? 'text-blue-900 dark:text-blue-100'
+            : 'text-emerald-900 dark:text-emerald-100',
           icon: '📢',
-          iconBg: 'bg-slate-500'
+          iconBg: isElectricity ? 'bg-amber-500' : isWater ? 'bg-blue-500' : 'bg-emerald-500',
+          accentColor: categoryColor || '#64748b'
         }
     }
   }
@@ -80,7 +139,10 @@ function AlertSystem({ alerts, onDismiss }) {
     <div className="fixed bottom-4 right-4 z-50 space-y-3 max-w-sm pointer-events-none">
       <AnimatePresence mode="popLayout">
         {visibleAlerts.map((alert, index) => {
-          const style = getAlertStyle(alert.type)
+          const style = getAlertStyle(alert.type, alert.categoryColor)
+          const borderStyle = alert.categoryColor 
+            ? { borderColor: alert.categoryColor, borderWidth: '3px' }
+            : {}
           return (
             <motion.div
               key={alert.id}
@@ -89,51 +151,38 @@ function AlertSystem({ alerts, onDismiss }) {
                 opacity: 0, 
                 y: 50, 
                 x: 100,
-                scale: 0.3,
-                rotateX: -15,
-                rotateZ: 10
+                scale: 0.3
               }}
               animate={{ 
                 opacity: 1, 
                 y: 0, 
                 x: 0,
-                scale: 1,
-                rotateX: 0,
-                rotateZ: 0
+                scale: 1
               }}
               exit={{ 
                 opacity: 0, 
                 x: 100,
                 scale: 0.5,
-                rotateZ: 15,
                 transition: { 
-                  duration: 0.4,
+                  duration: 0.3,
                   ease: [0.4, 0, 0.2, 1]
                 }
               }}
               transition={{ 
                 type: 'spring', 
-                stiffness: 400, 
-                damping: 25,
-                mass: 0.6,
-                layout: {
-                  duration: 0.3,
-                  ease: [0.4, 0, 0.2, 1]
-                }
+                stiffness: 500, 
+                damping: 30,
+                mass: 0.5
               }}
               className="pointer-events-auto"
-              style={{
-                transformOrigin: 'center right',
-                perspective: '1000px'
-              }}
             >
               <motion.div 
                 layout
-                className={`${style.bg} ${style.textColor} rounded-xl border-2 ${style.border} shadow-2xl backdrop-blur-md overflow-hidden relative`}
+                className={`${style.bg} ${style.textColor} rounded-xl ${style.border} shadow-2xl backdrop-blur-md overflow-hidden relative`}
+                style={borderStyle}
                 whileHover={{ 
-                  scale: 1.03,
-                  y: -5,
-                  boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+                  scale: 1.02,
+                  y: -3,
                   transition: { duration: 0.2 }
                 }}
               >
@@ -187,10 +236,11 @@ function AlertSystem({ alerts, onDismiss }) {
                         {style.icon}
                       </motion.div>
                       
-                      {/* Glow effect for critical/warning */}
+                      {/* Glow effect for critical/warning - use category color */}
                       {(alert.type === 'critical' || alert.type === 'warning') && (
                         <motion.div
-                          className={`absolute inset-0 rounded-full ${style.iconBg} blur-md`}
+                          className="absolute inset-0 rounded-full blur-md"
+                          style={{ backgroundColor: alert.categoryColor || style.accentColor }}
                           animate={{
                             opacity: [0.3, 0.6, 0.3],
                             scale: [0.8, 1.2, 0.8]
@@ -312,7 +362,8 @@ function AlertSystem({ alerts, onDismiss }) {
                   {alert.autoDismiss && (
                     <div className="mt-3 h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
                       <motion.div
-                        className={`h-full rounded-full ${style.iconBg}`}
+                        className="h-full rounded-full"
+                        style={{ backgroundColor: alert.categoryColor || style.accentColor || '#10b981' }}
                         initial={{ width: '100%' }}
                         animate={{ width: '0%' }}
                         transition={{ duration: alert.duration || 5, ease: 'linear' }}
